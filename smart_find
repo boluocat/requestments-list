@@ -1,0 +1,196 @@
+import xml.dom.minidom
+import pandas as pd
+from os import walk, path, _exit, startfile, makedirs
+from terminaltables import GithubFlavoredMarkdownTable
+from  time import perf_counter,strftime,localtime
+import sys
+import logging
+
+
+class user_arvg():
+
+    def catch_user_args(self):
+        case_sensitive_control = sys.argv[1].upper()
+        parent_folder_key = sys.argv[2].strip()
+        sub_appliction_key = sys.argv[3].strip()
+        job_name_key = sys.argv[4].strip()
+        task_type_key = sys.argv[5].strip()
+        description_key = sys.argv[6].strip()
+        variable_value_key = sys.argv[7].strip()
+        cmd_line_key = sys.argv[8].strip()
+    
+        if len(parent_folder_key + sub_appliction_key + job_name_key + description_key + variable_value_key + cmd_line_key) == 0:
+            logger.error('Please fill in at least one field')
+            _exit(999)
+        else:
+            search_pairs = {'PARENT_FOLDER':parent_folder_key, 'SUB_APPLICATION':sub_appliction_key, 'JOBNAME':job_name_key, 'TASKTYPE':task_type_key, 'DESCRIPTION':description_key, 'VARIABLE_VALUE':variable_value_key, 'CMDLINE':cmd_line_key}
+
+        return case_sensitive_control,search_pairs
+    
+
+class read_xml():
+
+    def get_xml_list(self):
+        target_xml_list = []
+        for root, dirs, files in walk(path.split(path.realpath(__file__))[0] + '/core/control_m_v9/upgrade'):
+            for file in files:
+                if path.splitext(file)[1] == '.xml':
+                    target_xml_list.append(path.join(root, file))
+    
+        return target_xml_list
+
+    def get_each_xml_attribute(self,xml_path):
+        job_tages = xml.dom.minidom.parse(xml_path).documentElement.getElementsByTagName("JOB")
+        sub_application, job_name, description, task_type, parent_folder, variable_name, variable_value, cmd_line = [],[],[],[],[],[],[],[]
+        
+        for each_job_tage in job_tages:
+            parent_folder_attribute = each_job_tage.getAttribute('PARENT_FOLDER')
+            sub_application_attribute = each_job_tage.getAttribute("SUB_APPLICATION")
+            job_name_attribute = each_job_tage.getAttribute('JOBNAME')
+            task_type_attribute = each_job_tage.getAttribute('TASKTYPE')
+            description_attribute = each_job_tage.getAttribute('DESCRIPTION')
+            variable_attributes = each_job_tage.getElementsByTagName("VARIABLE")
+            cmd_line_attribute = each_job_tage.getAttribute('CMDLINE')
+            
+            if len(variable_attributes) == 0:
+                sub_application.append(sub_application_attribute)
+                job_name.append(job_name_attribute)
+                description.append(description_attribute)
+                task_type.append(task_type_attribute)
+                parent_folder.append(parent_folder_attribute)
+                variable_name.append('No variable name')
+                variable_value.append('No variable value')
+                cmd_line.append(cmd_line_attribute)
+            else:
+                for each_varibale in variable_attributes:
+                    each_variable_name = each_varibale.getAttribute("NAME")
+                    each_variable_value = each_varibale.getAttribute("VALUE")
+                    sub_application.append(sub_application_attribute)
+                    job_name.append(job_name_attribute)
+                    description.append(description_attribute)
+                    task_type.append(task_type_attribute)
+                    parent_folder.append(parent_folder_attribute)
+                    variable_name.append(each_variable_name)
+                    variable_value.append(each_variable_value)
+                    cmd_line.append(cmd_line_attribute)
+    
+        each_xml_attribute = pd.DataFrame()
+        each_xml_attribute['PARENT_FOLDER'] = parent_folder
+        each_xml_attribute['SUB_APPLICATION'] = sub_application
+        each_xml_attribute['JOBNAME'] = job_name
+        each_xml_attribute['TASKTYPE'] = task_type
+        each_xml_attribute['DESCRIPTION'] = description
+        each_xml_attribute['VARIABLE_NAME'] = variable_name
+        each_xml_attribute['VARIABLE_VALUE'] = variable_value
+        each_xml_attribute['CMDLINE'] = cmd_line
+
+        return each_xml_attribute
+
+    def get_xmls_attribute(self):
+        target_xmls, xml_data_gross = self.get_xml_list(), pd.DataFrame()
+        for each_xml in target_xmls:
+            try:
+                xml.dom.minidom.parse(each_xml)
+            except xml.parsers.expat.ExpatError as ex:
+                logger.error('{} encountered an exception: {}.{}'.format(path.split(each_xml)[-1],type(ex), ex.args))
+                pass
+            else:
+                each_xml_data = self.get_each_xml_attribute(each_xml)
+                xml_data_gross = pd.concat([xml_data_gross, each_xml_data])
+        
+        return xml_data_gross
+
+    def get_detokenlize_config(self):
+        config_path, detokenlize_dict = path.split(path.realpath(__file__))[0] + '/Serverinfo.xml', {}
+        detokenlize_config_element = xml.dom.minidom.parse(config_path).documentElement
+        child_nodes = detokenlize_config_element.childNodes
+        for each_child in child_nodes: 
+            if each_child.nodeType == 3:
+                pass
+            else:
+                each_child_nodes = detokenlize_config_element.getElementsByTagName(each_child.nodeName)[0]
+                for each_child_node in each_child_nodes.childNodes:
+                    if each_child_node.nodeType in (each_child_node.TEXT_NODE,each_child_node.CDATA_SECTION_NODE):
+                        detokenlize_dict['<<'+each_child.nodeName+'>>'] = each_child_node.data
+
+        return detokenlize_dict
+
+
+class transform_data():
+
+    def detokenlize(self,source_data,detokenlize_rule):
+        for each_rule in detokenlize_rule:
+            for each_column_name in list(source_data):
+                source_data[each_column_name] = source_data[each_column_name].str.replace(each_rule,detokenlize_rule[each_rule])
+        
+        return source_data
+
+
+class search_key_words(user_arvg,transform_data,read_xml):
+    def add_job_key(self):
+        add_key_data = self.detokenlize(self.get_xmls_attribute(),self.get_detokenlize_config())
+        add_key_data['keys'] = add_key_data['PARENT_FOLDER'] + add_key_data['JOBNAME']
+        
+        return add_key_data
+
+    def match_value(self):
+        match_source_data = self.add_job_key()
+        match_source_data_copy = match_source_data.copy()
+        case_sensitive_control,match_pairs = self.catch_user_args()
+        target_columns = ['PARENT_FOLDER','SUB_APPLICATION','JOBNAME','TASKTYPE','DESCRIPTION','VARIABLE_VALUE','CMDLINE']
+        for each_target_column in target_columns:
+            search_key = match_pairs[each_target_column]
+            if len(search_key) != 0:
+                if case_sensitive_control == 'TRUE':
+                    match_source_data = match_source_data[match_source_data[each_target_column].str.contains(search_key)]
+                else:
+                    match_source_data_upper = match_source_data.copy()
+                    match_source_data_upper[each_target_column] = match_source_data_upper[each_target_column].str.upper()
+                    match_source_data = match_source_data[match_source_data_upper[each_target_column].str.contains(search_key.upper())] 
+                    
+            else:
+                pass
+
+        matched_key = pd.DataFrame(columns=['keys'])
+        matched_key['keys'] = match_source_data['keys']
+        matched_key.drop_duplicates(keep='first',inplace=True)
+        matched_result = pd.merge(match_source_data_copy,matched_key,on=['keys']).drop(['keys'], axis=1)
+
+        return matched_result
+
+    def save_result(self):
+        matched_result = self.match_value()
+        if len(matched_result) > 0:
+            results_file = path.split(path.realpath(__file__))[0] + '/ctm_'+ strftime('%Y%m%d_%H%M%S',localtime())+'.xlsx' 
+            matched_result.to_excel(results_file, index=False)
+            # with open(results_file,'w+',encoding='utf-8') as f:
+            #     f.write(GithubFlavoredMarkdownTable([list(matched_result)] + matched_result.values.tolist()).table)
+            # startfile(results_file)
+        else:
+            logger.info('No match.')
+            pass
+
+
+#logging
+logger_record_path = path.split(path.realpath(__file__))[0]+'/log'
+if not path.exists(logger_record_path):
+    makedirs(logger_record_path)
+Error_log_file = logger_record_path + '/Error_' + strftime('%Y%m%d',localtime())+'.log'
+logger = logging.getLogger('SmartFind')
+logger.setLevel(level = logging.INFO)
+formatter_file = logging.Formatter('%(asctime)s - File "%(pathname)s", line %(lineno)d, in %(funcName)s: %(levelname)s: %(message)s')
+formatter_console = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s')
+handler = logging.FileHandler(Error_log_file)
+handler.setLevel(logging.ERROR)
+handler.setFormatter(formatter_file)
+console_info = logging.StreamHandler()
+console_info.setFormatter(formatter_console)
+console_info.setLevel(logging.INFO)
+logger.addHandler(handler)
+logger.addHandler(console_info)
+
+pd.set_option('display.width', 1000)
+start = perf_counter()
+logger.info('Start matching')
+search_key_words().save_result()
+logger.info('Done! Elapsed time: {}s'.format(round(perf_counter() - start,3)))
